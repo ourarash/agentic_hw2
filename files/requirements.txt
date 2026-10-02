@@ -1,0 +1,7 @@
+# These versions match the Session 05 examples.
+langgraph==1.2.12
+langgraph-checkpoint==4.2.0
+langchain-core==1.6.5
+openai==2.24.0
+pydantic==2.13.5
+pytest==9.1.1

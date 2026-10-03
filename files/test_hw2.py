@@ -20,6 +20,7 @@ from langgraph_workflow import (
 )
 from plain_workflow import merge_search_updates, run_plain_workflow
 from radar_domain import (
+    RadarData,
     SOURCE_A,
     SOURCE_B,
     canonicalize_jobs,
@@ -84,6 +85,17 @@ def assert_failure(outcome: dict[str, object]) -> None:
     }
 
 
+def model_ready_state() -> RadarData:
+    """Return the fixed state supplied to either live model backend."""
+
+    state = initial_state("supported")
+    state.update(load_profile(state))
+    state["source_jobs"] = SOURCE_A + SOURCE_B
+    state.update(canonicalize_jobs(state))
+    state.update(score_matches(state))
+    return state
+
+
 def test_01_searches_are_fixed_local_fakes() -> None:
     async def collect():
         return await asyncio.gather(
@@ -112,7 +124,11 @@ def test_02_plain_merge_preserves_all_four_source_records() -> None:
     )
 
 
-def test_03_openai_call_requests_one_structured_claim() -> None:
+def test_03_openai_call_requests_one_structured_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LM_STUDIO_BASE_URL", raising=False)
+
     class FakeResponses:
         def __init__(self):
             self.arguments = None
@@ -129,15 +145,10 @@ def test_03_openai_call_requests_one_structured_claim() -> None:
 
     fake_responses = FakeResponses()
     fake_client = SimpleNamespace(responses=fake_responses)
-    state = initial_state("supported")
-    state.update(load_profile(state))
-    state["source_jobs"] = SOURCE_A + SOURCE_B
-    state.update(canonicalize_jobs(state))
-    state.update(score_matches(state))
 
     claim = run(
         generate_claim_with_openai(
-            state,
+            model_ready_state(),
             client=fake_client,
             model="test-model",
         )
@@ -148,6 +159,45 @@ def test_03_openai_call_requests_one_structured_claim() -> None:
     assert fake_responses.arguments["text_format"] is ResumeClaimOutput
     assert fake_responses.arguments["store"] is False
     assert "ev-python-api" in fake_responses.arguments["input"]
+
+
+def test_03b_lm_studio_uses_structured_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompletions:
+        def __init__(self):
+            self.arguments = None
+
+        async def parse(self, **arguments):
+            self.arguments = arguments
+            proposal = ResumeClaimOutput(
+                text="Built a FastAPI service backed by PostgreSQL.",
+                claimed_skills=["FastAPI", "PostgreSQL"],
+                evidence_ids=["ev-python-api", "ev-postgres"],
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(parsed=proposal))]
+            )
+
+    fake_completions = FakeCompletions()
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=fake_completions)
+    )
+    monkeypatch.setenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+
+    claim = run(
+        generate_claim_with_openai(
+            model_ready_state(),
+            client=fake_client,
+            model="local-test-model",
+        )
+    )
+
+    arguments = fake_completions.arguments
+    assert claim["claimed_skills"] == ["FastAPI", "PostgreSQL"]
+    assert arguments["model"] == "local-test-model"
+    assert arguments["response_format"] is ResumeClaimOutput
+    assert "ev-python-api" in arguments["messages"][1]["content"]
 
 
 def test_04_plain_workflow_returns_a_checked_preview() -> None:

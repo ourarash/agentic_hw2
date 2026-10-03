@@ -39,16 +39,25 @@ async def main() -> None:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Call the OpenAI API once and reuse its claim in both workflows.",
+        help="Call a live model once and reuse its claim in both workflows.",
     )
     args = parser.parse_args()
 
     if args.live:
-        if not os.getenv("OPENAI_API_KEY"):
+        lm_studio_base_url = os.getenv("LM_STUDIO_BASE_URL")
+        if lm_studio_base_url and not os.getenv("OPENAI_MODEL"):
+            parser.error(
+                "Set OPENAI_MODEL to the model identifier loaded in LM Studio."
+            )
+        if not lm_studio_base_url and not os.getenv("OPENAI_API_KEY"):
             parser.error("Set OPENAI_API_KEY before using --live.")
         claim_modes = ("supported",)
         claim_source = generate_claim_with_openai
-        model_mode = "live OpenAI call"
+        model_mode = (
+            "live LM Studio call"
+            if lm_studio_base_url
+            else "live OpenAI call"
+        )
     else:
         claim_modes = ("supported", "unsupported")
         claim_source = scripted_claim_generator

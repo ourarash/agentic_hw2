@@ -1,8 +1,8 @@
 """The shared model call used by both Job Radar workflows.
 
-The live function asks an OpenAI model for one structured résumé claim. The
-application then checks the returned claim against the supplied profile
-evidence. The model does not decide whether the claim is accepted.
+The live function uses the OpenAI Python SDK with either OpenAI or a local LM
+Studio server. The application checks the returned claim against the supplied
+profile evidence. The model does not decide whether the claim is accepted.
 
 Tests use ``scripted_claim_generator`` so grading is repeatable and does not
 need an API key or network connection.
@@ -59,24 +59,54 @@ async def generate_claim_with_openai(
     client: Any | None = None,
     model: str | None = None,
 ) -> ResumeClaim:
-    """Request one typed claim from the OpenAI Responses API.
+    """Request one typed claim through the OpenAI Python SDK.
 
     ``client`` and ``model`` are optional so tests can supply a local test
-    client. A normal run reads ``OPENAI_API_KEY`` through ``AsyncOpenAI`` and
-    uses ``OPENAI_MODEL`` when it is set.
+    client. OpenAI uses the Responses API. When ``LM_STUDIO_BASE_URL`` is set,
+    the same SDK uses LM Studio's structured Chat Completions endpoint.
     """
 
-    openai_client = client or AsyncOpenAI()
-    model_name = model or os.getenv("OPENAI_MODEL", "gpt-6-luna")
-    response = await openai_client.responses.parse(
-        model=model_name,
-        instructions=MODEL_INSTRUCTIONS,
-        input=model_input(state),
-        text_format=ResumeClaimOutput,
-        max_output_tokens=300,
-        store=False,
-    )
-    proposal = response.output_parsed
+    lm_studio_base_url = os.getenv("LM_STUDIO_BASE_URL")
+    model_name = model or os.getenv("OPENAI_MODEL")
+    if model_name is None:
+        if lm_studio_base_url:
+            raise RuntimeError(
+                "Set OPENAI_MODEL to the model identifier loaded in LM Studio."
+            )
+        model_name = "gpt-6-luna"
+
+    if client is not None:
+        openai_client = client
+    elif lm_studio_base_url:
+        openai_client = AsyncOpenAI(
+            api_key="lm-studio",
+            base_url=lm_studio_base_url,
+        )
+    else:
+        openai_client = AsyncOpenAI()
+
+    if lm_studio_base_url:
+        completion = await openai_client.chat.completions.parse(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": MODEL_INSTRUCTIONS},
+                {"role": "user", "content": model_input(state)},
+            ],
+            response_format=ResumeClaimOutput,
+            max_tokens=300,
+        )
+        proposal = completion.choices[0].message.parsed
+    else:
+        response = await openai_client.responses.parse(
+            model=model_name,
+            instructions=MODEL_INSTRUCTIONS,
+            input=model_input(state),
+            text_format=ResumeClaimOutput,
+            max_output_tokens=300,
+            store=False,
+        )
+        proposal = response.output_parsed
+
     if proposal is None:
         raise RuntimeError("The model did not return a résumé claim.")
 
